@@ -59,6 +59,7 @@ mod tests {
             command: Command::Request,
             entries: vec![
                 Entry {
+                    address_family_id: 0,
                     route_tag: 10,
                     ip_address: Ipv4Addr::new(129, 21, 60, 79),
                     subnet_mask: 24,
@@ -66,6 +67,7 @@ mod tests {
                     metric: 10,
                 },
                 Entry {
+                    address_family_id: 2,
                     route_tag: 20,
                     ip_address: Ipv4Addr::new(19, 23, 61, 89),
                     subnet_mask: 10,

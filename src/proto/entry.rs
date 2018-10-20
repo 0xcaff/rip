@@ -6,6 +6,7 @@ use byteorder::{NetworkEndian, WriteBytesExt};
 
 #[derive(Eq, PartialEq, Debug)]
 pub struct Entry {
+    pub address_family_id: u16,
     pub route_tag: u16,
     pub ip_address: Ipv4Addr,
     pub subnet_mask: u32,
@@ -14,14 +15,15 @@ pub struct Entry {
 }
 
 named!(pub parse_entry<Entry>, do_parse!(
-                 take!(2) >>
-    route_tag:   be_u16   >>
-    ip_address:  be_u32   >>
-    subnet_mask: be_u32   >>
-    next_hop:    be_u32   >>
-    metric:      be_u32   >>
+    address_family_id: be_u16 >>
+    route_tag:         be_u16 >>
+    ip_address:        be_u32 >>
+    subnet_mask:       be_u32 >>
+    next_hop:          be_u32 >>
+    metric:            be_u32 >>
 
     (Entry {
+        address_family_id,
         route_tag,
         ip_address: Ipv4Addr::from(ip_address),
         subnet_mask,
@@ -42,7 +44,7 @@ impl Entry {
         let mut output = Vec::new();
 
         // Address Family Identifier
-        output.write_u16::<NetworkEndian>(2)?;
+        output.write_u16::<NetworkEndian>(self.address_family_id)?;
         output.write_u16::<NetworkEndian>(self.route_tag)?;
 
         output.write_u32::<NetworkEndian>(u32::from(self.ip_address))?;
@@ -61,6 +63,7 @@ mod tests {
     #[test]
     fn test_encode_decode() {
         let entry = Entry {
+            address_family_id: 2,
             route_tag: 10,
             ip_address: Ipv4Addr::new(129, 21, 60, 79),
             subnet_mask: 24,
