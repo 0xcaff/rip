@@ -1,9 +1,8 @@
-use std::net::Ipv4Addr;
-use nom::{be_u16, be_u32, IResult};
 use failure::Error;
+use nom::{be_u16, be_u32};
+use std::net::Ipv4Addr;
 
-use byteorder::NetworkEndian;
-use byteorder::WriteBytesExt;
+use byteorder::{NetworkEndian, WriteBytesExt};
 
 #[derive(Eq, PartialEq, Debug)]
 pub struct Entry {
@@ -14,28 +13,27 @@ pub struct Entry {
     pub metric: u32,
 }
 
-impl Entry {
-    fn parse_nom(input: &[u8]) -> IResult<&[u8], Entry> {
-        do_parse!(input,
-                         take!(2) >>
-            route_tag:   be_u16   >>
-            ip_address:  be_u32   >>
-            subnet_mask: be_u32   >>
-            next_hop:    be_u32   >>
-            metric:      be_u32   >>
-            (Entry {
-                route_tag,
-                ip_address: Ipv4Addr::from(ip_address),
-                subnet_mask,
-                next_hop: Ipv4Addr::from(next_hop),
-                metric
-            })
-        )
-    }
+named!(pub parse_entry<Entry>, do_parse!(
+                 take!(2) >>
+    route_tag:   be_u16   >>
+    ip_address:  be_u32   >>
+    subnet_mask: be_u32   >>
+    next_hop:    be_u32   >>
+    metric:      be_u32   >>
 
+    (Entry {
+        route_tag,
+        ip_address: Ipv4Addr::from(ip_address),
+        subnet_mask,
+        next_hop: Ipv4Addr::from(next_hop),
+        metric
+    })
+));
+
+impl Entry {
     pub fn decode(raw: &[u8]) -> Result<Entry, Error> {
-        let (_, entry) = Entry::parse_nom(raw)
-            .map_err(|_e| format_err!("Failed to parse routing table entry."))?;
+        let (_, entry) = parse_entry(raw)
+            .map_err(|err| format_err!("Failed to parse routing table entry: {}", err))?;
 
         Ok(entry)
     }
@@ -76,4 +74,3 @@ mod tests {
         assert_eq!(decoded, entry);
     }
 }
-
