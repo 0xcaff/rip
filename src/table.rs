@@ -4,7 +4,7 @@ use parking_lot::ReentrantMutex;
 use std::cell::RefCell;
 use std::cmp::min;
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -14,6 +14,7 @@ use NetworkPrefix;
 use tokio::{self, prelude::Future, spawn_handle, timer::Delay, SpawnHandle};
 
 struct RoutingTable {
+    send_socket: UdpSocket,
     table: HashMap<NetworkPrefix, Route>,
     directly_connected: HashMap<Ipv4Addr, DirectlyConnectedContext>,
 }
@@ -23,9 +24,8 @@ struct DirectlyConnectedContext {
     metric: u32,
 }
 
-// TODO: Outbound Messages (Tick Updates)
-
 struct Route {
+    destination: Ipv4Addr,
     next_hop: Ipv4Addr,
     metric: u32,
 
@@ -83,7 +83,7 @@ impl RoutingTable {
         let addr = get_ipv4_addr(from)?;
         let context = this
             .directly_connected
-            .get(&addr)
+            .gt(&addr)
             .ok_or_else(|| format_err!("received a route update from a non-neighboring node"))?;
 
         for entry in entries {
@@ -111,6 +111,7 @@ impl RoutingTable {
             match this.table.get_mut(&network_prefix) {
                 None if metric_through < 16 => {
                     let mut route = Route {
+                        destination: entry.ip_address,
                         next_hop: context.address,
                         metric: metric_through,
                         neighbor_timeout_handle: None,
@@ -154,6 +155,42 @@ impl RoutingTable {
             }
             _ => (),
         };
+    }
+
+    fn build_update_for(&self, neighbor_address: &SocketAddrV4) -> Vec<Entry> {
+        let neighbor_network_prefix = u32::from(neighbor_address.ip()) & ALLOWED_NETMASK;
+
+        self.table
+            .iter()
+            .map(|(network_prefix, entry)| {
+                let metric = if network_prefix == neighbor_network_prefix {
+                    16
+                } else {
+                    entry.metric
+                };
+
+                Entry {
+                    address_family_id: 2,
+                    route_tag: 0,
+                    ip_address: entry.destination,
+                    subnet_mask: ALLOWED_NETMASK,
+                    next_hop: entry.next_hop,
+                    metric,
+                }
+            }).collect()
+    }
+
+    fn send_update_to(&self, neighbor_address: SocketAddrV4) -> Result<(), Error> {
+        let message = Message {
+            command: Command::Response,
+            entries: self.build_update_for(&neighbor_address),
+        };
+
+        let encoded = message.encode()?;
+        self.send_socket
+            .send_to(&encoded, SocketAddr::V4(neighbor_address))?;
+
+        Ok(())
     }
 }
 
