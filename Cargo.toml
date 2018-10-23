@@ -11,5 +11,4 @@ toml = "0.4.8"
 serde = "1.0.80"
 serde_derive = "1.0.80"
 tokio = { git = "https://github.com/tokio-rs/tokio.git", branch = "eliza/spawn-handle" }
-parking_lot = "0.6.4"
 futures = "0.1.25"

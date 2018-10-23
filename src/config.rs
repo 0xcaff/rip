@@ -1,4 +1,3 @@
-use failure::Error;
 use proto::ALLOWED_NETMASK;
 use std::net::{SocketAddr, SocketAddrV4};
 

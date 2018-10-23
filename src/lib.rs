@@ -15,8 +15,6 @@ extern crate tokio;
 #[macro_use]
 extern crate futures;
 
-extern crate parking_lot;
-
 pub type NetworkPrefix = u32;
 
 mod config;
@@ -25,4 +23,4 @@ mod proto;
 mod table;
 
 pub use config::Config;
-pub use table::RoutingTable;
+pub use table::start;
