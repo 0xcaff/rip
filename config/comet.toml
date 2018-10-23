@@ -1,0 +1,11 @@
+bind_address = "0.0.0.0:5892"
+
+[[neighbors]]
+# Glados
+ip_address = "129.21.22.196:5892"
+metric = 1
+
+[[neighbors]]
+# Queeg
+ip_address = "129.21.30.37:5892"
+metric = 9
