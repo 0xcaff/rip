@@ -26,6 +26,9 @@ use tokio::timer::Interval;
 use tokio::SpawnHandle;
 use NetworkPrefix;
 
+const REFRESH_DELAY: u64 = 1;
+const TIMEOUT_DELAY: u64 = REFRESH_DELAY * 6;
+
 #[derive(Debug)]
 struct Route {
     destination: Ipv4Addr,
@@ -39,8 +42,24 @@ struct Route {
 }
 
 impl Route {
+    fn as_entry(&self, neighbor: &Ipv4Addr) -> Entry {
+        let metric = if &self.destination == neighbor || &self.next_hop == neighbor {
+            16
+        } else {
+            self.metric
+        };
+
+        Entry {
+            address_family_id: 2,
+            route_tag: 0,
+            ip_address: self.destination,
+            subnet_mask: u32::from(self.subnet_mask),
+            metric,
+        }
+    }
+
     fn restart_timeout(&mut self, routing_table: Arc<Mutex<RoutingTable>>, network_prefix: u32) {
-        let timeout = Delay::new(Instant::now() + Duration::new(10, 0)).map(move |_a| {
+        let timeout = Delay::new(Instant::now() + Duration::new(TIMEOUT_DELAY, 0)).map(move |_a| {
             let mut routing_table = routing_table.lock().unwrap();
             routing_table.handle_timeout(network_prefix)
         });
@@ -54,7 +73,7 @@ impl Route {
 
 struct RoutingTable {
     table: HashMap<NetworkPrefix, Route>,
-    directly_connected: HashMap<Ipv4Addr, Neighbor>,
+    neighbors: HashMap<Ipv4Addr, Neighbor>,
     send_socket: std::net::UdpSocket,
 }
 
@@ -86,7 +105,7 @@ impl RoutingTable {
         Ok((
             RoutingTable {
                 table,
-                directly_connected,
+                neighbors: directly_connected,
                 send_socket,
             },
             recv_stream,
@@ -124,7 +143,7 @@ impl RoutingTable {
         let from_addr = get_ipv4_addr(from)?;
 
         let neighbor = self
-            .directly_connected
+            .neighbors
             .get(&from_addr)
             .ok_or_else(|| {
                 format_err!(
@@ -158,7 +177,7 @@ impl RoutingTable {
         let network_prefix = entry.network_prefix();
         let src_to_dst_metric = min(neighbor.metric + entry.metric, 16);
 
-        let route_to_add = {
+        let (route_to_add, should_trigger_update) = {
             match self.table.get_mut(&network_prefix) {
                 None if src_to_dst_metric < 16 => {
                     let mut route = Route {
@@ -171,7 +190,7 @@ impl RoutingTable {
 
                     route.restart_timeout(shared.clone(), network_prefix);
 
-                    Some(route)
+                    (Some(route), false)
                 }
                 Some(ref mut route) => {
                     let is_neighbor = &route.next_hop == neighbor.address.ip();
@@ -180,17 +199,25 @@ impl RoutingTable {
                         route.next_hop = *neighbor.address.ip();
 
                         route.restart_timeout(shared.clone(), network_prefix);
-                    }
 
-                    None
+                        (None, src_to_dst_metric < route.metric)
+                    } else {
+                        (None, false)
+                    }
                 }
                 _ => return,
             }
         };
 
         if let Some(route) = route_to_add {
+            self.send_triggered_update(&route);
             self.table.insert(network_prefix, route);
         }
+
+        if should_trigger_update {
+            self.send_triggered_update_for(&network_prefix);
+        }
+
         self.print_table();
     }
 
@@ -214,17 +241,31 @@ impl RoutingTable {
     }
 
     fn send_updates(&self) {
-        let neighbors: Vec<SocketAddrV4> = self
-            .directly_connected
-            .iter()
-            .map(|(_, ctx)| ctx.address)
-            .collect();
+        let neighbors: Vec<SocketAddrV4> =
+            self.neighbors.iter().map(|(_, ctx)| ctx.address).collect();
 
         neighbors.into_iter().for_each(|addr| {
-            self.send_update_to(&addr)
+            self.send_entries_to(&addr, self.build_update_for(&addr))
                 .map_err(|e| println!("error while sending {}", e))
                 .ok();
         });
+    }
+
+    fn send_triggered_update_for(&self, network_prefix: &u32) {
+        let route = self.table.get(&network_prefix).unwrap();
+
+        self.send_triggered_update(route);
+    }
+
+    fn send_triggered_update(&self, route: &Route) {
+        println!("Triggering Update for {}", route.destination);
+
+        for (_, neighbor) in &self.neighbors {
+            let entry = route.as_entry(neighbor.address.ip());
+            self.send_entries_to(&neighbor.address, vec![entry])
+                .map_err(|e| println!("Error while sending triggered update {}", e))
+                .ok();
+        }
     }
 
     fn build_update_for(&self, neighbor_address: &SocketAddrV4) -> Vec<Entry> {
@@ -232,28 +273,18 @@ impl RoutingTable {
 
         self.table
             .iter()
-            .map(|(_network_prefix, entry)| {
-                let metric = if &entry.destination == neighbor_ip || &entry.next_hop == neighbor_ip
-                {
-                    16
-                } else {
-                    entry.metric
-                };
-
-                Entry {
-                    address_family_id: 2,
-                    route_tag: 0,
-                    ip_address: entry.destination,
-                    subnet_mask: u32::from(entry.subnet_mask),
-                    metric,
-                }
-            }).collect()
+            .map(|(_network_prefix, entry)| entry.as_entry(neighbor_ip))
+            .collect()
     }
 
-    fn send_update_to(&self, neighbor_address: &SocketAddrV4) -> Result<(), Error> {
+    fn send_entries_to(
+        &self,
+        neighbor_address: &SocketAddrV4,
+        entries: Vec<Entry>,
+    ) -> Result<(), Error> {
         let message = Message {
             command: Command::Response,
-            entries: self.build_update_for(&neighbor_address),
+            entries,
         };
 
         let encoded = message.encode()?;
@@ -263,13 +294,19 @@ impl RoutingTable {
     }
 
     fn handle_timeout(&mut self, network_prefix: u32) {
-        match self.table.get_mut(&network_prefix) {
+        let should_trigger_update = match self.table.get_mut(&network_prefix) {
             Some(entry) => {
                 entry.neighbor_timeout_handle.take();
                 entry.metric = 16;
+
+                true
             }
-            _ => (),
+            _ => false,
         };
+
+        if should_trigger_update {
+            self.send_triggered_update_for(&network_prefix);
+        }
 
         self.print_table();
     }
@@ -294,7 +331,7 @@ pub fn start(config: Config) -> impl Future<Item = (), Error = Error> {
             }
 
             let outbound_shared = shared.clone();
-            let outbound_stream = Interval::new_interval(Duration::new(1, 0))
+            let outbound_stream = Interval::new_interval(Duration::new(REFRESH_DELAY, 0))
                 .map(move |_| {
                     let routing_table = outbound_shared.lock().unwrap();
                     routing_table.send_updates();
