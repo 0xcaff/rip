@@ -11,8 +11,8 @@ use std::env;
 use std::fs::File;
 use std::io::Read;
 
-use tokio::runtime::Runtime;
 use rip::start;
+use tokio::runtime::Runtime;
 
 fn main() -> Result<(), Error> {
     let config_file_path = env::args().nth(1).ok_or(format_err!("missing argument"))?;
