@@ -20,7 +20,6 @@ pub type NetworkPrefix = u32;
 mod config;
 mod proto;
 mod table;
-mod udp;
 
 pub use config::Config;
 pub use table::start;

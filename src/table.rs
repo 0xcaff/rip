@@ -4,6 +4,7 @@ use failure::Error;
 use proto::Command;
 use proto::Entry;
 use proto::Message;
+use proto::UdpStream;
 use proto::ALLOWED_NETMASK;
 use std;
 use std::cmp::min;
@@ -24,7 +25,6 @@ use tokio::spawn_handle;
 use tokio::timer::Delay;
 use tokio::timer::Interval;
 use tokio::SpawnHandle;
-use udp::UdpStream;
 use NetworkPrefix;
 
 #[derive(Debug)]
@@ -347,5 +347,3 @@ fn get_ipv4_addr(from: SocketAddr) -> Result<Ipv4Addr, Error> {
         _ => return Err(format_err!("not an ipv4 address {}", from)),
     }
 }
-
-// TODO: Netmask
