@@ -196,12 +196,11 @@ impl RoutingTable {
                     Some(route)
                 }
                 Some(ref mut route) => {
-                    if src_to_dst_metric < route.metric {
+                    let is_neighbor = &route.next_hop == context.address.ip();
+                    if is_neighbor || src_to_dst_metric < route.metric {
                         route.metric = src_to_dst_metric;
                         route.next_hop = *context.address.ip();
-                    }
 
-                    if &route.next_hop == context.address.ip() {
                         route.restart_timeout(shared.clone(), network_prefix);
                     }
 
