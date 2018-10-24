@@ -27,6 +27,7 @@ use tokio::SpawnHandle;
 use udp::UdpStream;
 use NetworkPrefix;
 
+#[derive(Debug)]
 struct DirectlyConnectedContext {
     address: SocketAddrV4,
     metric: u32,
@@ -54,14 +55,14 @@ struct Route {
 
 impl Route {
     fn restart_timeout(&mut self, routing_table: Arc<Mutex<RoutingTable>>, network_prefix: u32) {
-        let routing_table_clone = routing_table.clone();
-        let timeout = Delay::new(Instant::now() + Duration::new(180, 0)).map(move |_a| {
-            let mut routing_table = routing_table_clone.lock().unwrap();
+        let timeout = Delay::new(Instant::now() + Duration::new(10, 0)).map(move |_a| {
+            let mut routing_table = routing_table.lock().unwrap();
             routing_table.handle_timeout(network_prefix)
         });
 
         let handle = spawn_handle(timeout);
 
+        self.neighbor_timeout_handle.take().map(|v| v.cancel());
         self.neighbor_timeout_handle = Some(handle);
     }
 }
@@ -138,8 +139,25 @@ impl RoutingTable {
         entries: Vec<Entry>,
         from: SocketAddr,
     ) -> Result<(), Error> {
+        let from_addr = get_ipv4_addr(from)?;
+
+        self.handle_entry(
+            shared.clone(),
+            &from_addr,
+            Entry {
+                address_family_id: 2,
+                route_tag: 0,
+                ip_address: from_addr.clone(),
+                subnet_mask: ALLOWED_NETMASK,
+                metric: 0,
+            },
+        ).map_err(|e| println!("Unexpected error: {}", e))
+        .ok();
+
         for entry in entries {
-            self.handle_entry(shared.clone(), from.clone(), entry)
+            entry.validate()?;
+
+            self.handle_entry(shared.clone(), &from_addr, entry)
                 .map_err(|e| println!("Warning: {}", e))
                 .ok();
         }
@@ -150,29 +168,26 @@ impl RoutingTable {
     fn handle_entry(
         &mut self,
         shared: Arc<Mutex<RoutingTable>>,
-        from: SocketAddr,
+        addr: &Ipv4Addr,
         entry: Entry,
     ) -> Result<(), Error> {
-        let addr = get_ipv4_addr(from)?;
-
-        let context = self.directly_connected.get(&addr).ok_or_else(|| {
+        let context = self.directly_connected.get(addr).ok_or_else(|| {
             format_err!(
                 "received a route update from a non-neighboring node {}",
-                from
+                addr
             )
         })?;
 
-        entry.validate()?;
         let network_prefix = entry.network_prefix();
-        let metric_through = min(entry.metric + context.metric, 16);
+        let src_to_dst_metric = min(context.metric + entry.metric, 16);
 
         let route_to_add = {
             match self.table.get_mut(&network_prefix) {
-                None if metric_through < 16 => {
+                None if src_to_dst_metric < 16 => {
                     let mut route = Route {
                         destination: entry.ip_address,
                         next_hop: *context.address.ip(),
-                        metric: metric_through,
+                        metric: src_to_dst_metric,
                         neighbor_timeout_handle: None,
                     };
 
@@ -180,15 +195,14 @@ impl RoutingTable {
 
                     Some(route)
                 }
-                Some(route) => {
-                    let from_next_hop = context.address.ip() == &route.next_hop;
-                    if from_next_hop {
-                        route.restart_timeout(shared.clone(), network_prefix);
+                Some(ref mut route) => {
+                    if src_to_dst_metric < route.metric {
+                        route.metric = src_to_dst_metric;
+                        route.next_hop = *context.address.ip();
                     }
 
-                    if from_next_hop || metric_through < route.metric {
-                        route.metric = metric_through;
-                        route.next_hop = entry.next_hop;
+                    if &route.next_hop == context.address.ip() {
+                        route.restart_timeout(shared.clone(), network_prefix);
                     }
 
                     None
@@ -206,7 +220,16 @@ impl RoutingTable {
     }
 
     fn print_table(&self) {
-        println!("{:#?}", self.table)
+        for (_, entry) in &self.table {
+            println!(
+                "| {:20} | {:20} | {:5} |",
+                entry.destination.to_string(),
+                entry.next_hop.to_string(),
+                entry.metric
+            );
+        }
+
+        println!();
     }
 
     fn send_updates(&self) {
@@ -218,17 +241,19 @@ impl RoutingTable {
 
         neighbors.into_iter().for_each(|addr| {
             self.send_update_to(&addr)
-                .map_err(|e| println!("error while sending {}", e));
+                .map_err(|e| println!("error while sending {}", e))
+                .ok();
         });
     }
 
     fn build_update_for(&self, neighbor_address: &SocketAddrV4) -> Vec<Entry> {
-        let neighbor_network_prefix = u32::from(*neighbor_address.ip()) & ALLOWED_NETMASK;
+        let neighbor_ip = neighbor_address.ip();
 
         self.table
             .iter()
-            .map(|(network_prefix, entry)| {
-                let metric = if network_prefix == &neighbor_network_prefix {
+            .map(|(_network_prefix, entry)| {
+                let metric = if &entry.destination == neighbor_ip || &entry.next_hop == neighbor_ip
+                {
                     16
                 } else {
                     entry.metric
@@ -239,7 +264,6 @@ impl RoutingTable {
                     route_tag: 0,
                     ip_address: entry.destination,
                     subnet_mask: ALLOWED_NETMASK,
-                    next_hop: entry.next_hop,
                     metric,
                 }
             }).collect()
@@ -258,8 +282,6 @@ impl RoutingTable {
     }
 
     fn handle_timeout(&mut self, network_prefix: u32) {
-        println!("Something Timed Out {}", network_prefix);
-
         match self.table.get_mut(&network_prefix) {
             Some(entry) => {
                 entry.neighbor_timeout_handle.take();
@@ -271,7 +293,6 @@ impl RoutingTable {
         self.print_table();
     }
 
-    // TODO: Call Me
     fn start_timeouts(&mut self, shared: Arc<Mutex<RoutingTable>>) {
         self.table.iter_mut().for_each(|(network_prefix, entry)| {
             entry.restart_timeout(shared.clone(), *network_prefix)
@@ -282,8 +303,14 @@ impl RoutingTable {
 pub fn start(config: Config) -> impl Future<Item = (), Error = Error> {
     RoutingTable::new(config)
         .into_future()
-        .map(|(mut routing_table, recv_stream)| {
+        .map(|(routing_table, recv_stream)| {
+            routing_table.print_table();
             let shared = routing_table.into_shared();
+
+            {
+                let mut routing_table = shared.lock().unwrap();
+                routing_table.start_timeouts(shared.clone());
+            }
 
             let outbound_shared = shared.clone();
             let outbound_stream = Interval::new_interval(Duration::new(1, 0))
@@ -321,3 +348,5 @@ fn get_ipv4_addr(from: SocketAddr) -> Result<Ipv4Addr, Error> {
         _ => return Err(format_err!("not an ipv4 address {}", from)),
     }
 }
+
+// TODO: Netmask
