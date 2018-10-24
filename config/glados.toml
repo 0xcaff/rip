@@ -2,10 +2,10 @@ bind_address = "0.0.0.0:5892"
 
 [[neighbors]]
 # Rhea
-ip_address = "129.21.37.49:5892"
+address = "129.21.37.49:5892"
 metric = 2
 
 [[neighbors]]
 # Comet
-ip_address = "129.21.34.80:5892"
+address = "129.21.34.80:5892"
 metric = 1

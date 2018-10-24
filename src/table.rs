@@ -36,7 +36,7 @@ struct DirectlyConnectedContext {
 impl<'a> From<&'a Neighbor> for DirectlyConnectedContext {
     fn from(neighbor: &'a Neighbor) -> Self {
         DirectlyConnectedContext {
-            address: neighbor.ip_address,
+            address: neighbor.address,
             metric: neighbor.metric,
         }
     }
@@ -81,7 +81,7 @@ impl RoutingTable {
 
         for neighbor in &config.neighbors {
             directly_connected.insert(
-                *neighbor.ip_address.ip(),
+                *neighbor.address.ip(),
                 DirectlyConnectedContext::from(neighbor),
             );
         }
@@ -93,8 +93,8 @@ impl RoutingTable {
             table.insert(
                 network_prefix,
                 Route {
-                    destination: *neighbor.ip_address.ip(),
-                    next_hop: *neighbor.ip_address.ip(),
+                    destination: *neighbor.address.ip(),
+                    next_hop: *neighbor.address.ip(),
                     metric: neighbor.metric,
                     neighbor_timeout_handle: None,
                 },

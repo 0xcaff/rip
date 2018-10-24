@@ -9,12 +9,12 @@ pub struct Config {
 
 #[derive(Deserialize)]
 pub struct Neighbor {
-    pub ip_address: SocketAddrV4,
+    pub address: SocketAddrV4,
     pub metric: u32,
 }
 
 impl Neighbor {
     pub fn network_prefix(&self) -> u32 {
-        u32::from(*self.ip_address.ip()) & ALLOWED_NETMASK
+        u32::from(*self.address.ip()) & ALLOWED_NETMASK
     }
 }
