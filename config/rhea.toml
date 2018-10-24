@@ -3,9 +3,11 @@ bind_address = "0.0.0.0:5892"
 [[neighbors]]
 # Glados
 address = "129.21.22.196:5892"
+subnet_mask = "255.255.255.0"
 metric = 2
 
 [[neighbors]]
 # Queeg
 address = "129.21.30.37:5892"
+subnet_mask = "255.255.255.0"
 metric = 4

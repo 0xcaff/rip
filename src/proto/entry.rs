@@ -4,8 +4,6 @@ use std::net::Ipv4Addr;
 
 use byteorder::{NetworkEndian, WriteBytesExt};
 
-pub const ALLOWED_NETMASK: u32 = 0xffffff00;
-
 #[derive(Eq, PartialEq, Debug)]
 pub struct Entry {
     pub address_family_id: u16,
@@ -56,10 +54,6 @@ impl Entry {
     }
 
     pub fn validate(&self) -> Result<(), Error> {
-        if self.subnet_mask != ALLOWED_NETMASK {
-            return Err(format_err!("invalid netmask {}", self.subnet_mask));
-        };
-
         if !(self.metric >= 1 && self.metric <= 16) {
             return Err(format_err!("metric out of bounds {}", self.metric));
         };

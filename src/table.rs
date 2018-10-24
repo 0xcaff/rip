@@ -5,7 +5,6 @@ use proto::Command;
 use proto::Entry;
 use proto::Message;
 use proto::UdpStream;
-use proto::ALLOWED_NETMASK;
 use std;
 use std::cmp::min;
 use std::collections::HashMap;
@@ -28,24 +27,10 @@ use tokio::SpawnHandle;
 use NetworkPrefix;
 
 #[derive(Debug)]
-struct DirectlyConnectedContext {
-    address: SocketAddrV4,
-    metric: u32,
-}
-
-impl<'a> From<&'a Neighbor> for DirectlyConnectedContext {
-    fn from(neighbor: &'a Neighbor) -> Self {
-        DirectlyConnectedContext {
-            address: neighbor.address,
-            metric: neighbor.metric,
-        }
-    }
-}
-
-#[derive(Debug)]
 struct Route {
     destination: Ipv4Addr,
     next_hop: Ipv4Addr,
+    subnet_mask: Ipv4Addr,
     metric: u32,
 
     /// A handle to the future which resolves after a neighbor hasn't sent a message in some amount
@@ -69,22 +54,13 @@ impl Route {
 
 struct RoutingTable {
     table: HashMap<NetworkPrefix, Route>,
-    directly_connected: HashMap<Ipv4Addr, DirectlyConnectedContext>,
+    directly_connected: HashMap<Ipv4Addr, Neighbor>,
     send_socket: std::net::UdpSocket,
 }
 
 impl RoutingTable {
     fn new(config: Config) -> Result<(RoutingTable, UdpStream), Error> {
         let (send_socket, recv_stream) = create_sockets(config.bind_address)?;
-
-        let mut directly_connected = HashMap::new();
-
-        for neighbor in &config.neighbors {
-            directly_connected.insert(
-                *neighbor.address.ip(),
-                DirectlyConnectedContext::from(neighbor),
-            );
-        }
 
         let mut table = HashMap::new();
         for neighbor in &config.neighbors {
@@ -95,10 +71,16 @@ impl RoutingTable {
                 Route {
                     destination: *neighbor.address.ip(),
                     next_hop: *neighbor.address.ip(),
+                    subnet_mask: neighbor.subnet_mask,
                     metric: neighbor.metric,
                     neighbor_timeout_handle: None,
                 },
             );
+        }
+
+        let mut directly_connected = HashMap::new();
+        for neighbor in config.neighbors {
+            directly_connected.insert(*neighbor.address.ip(), neighbor);
         }
 
         Ok((
@@ -141,52 +123,48 @@ impl RoutingTable {
     ) -> Result<(), Error> {
         let from_addr = get_ipv4_addr(from)?;
 
+        let neighbor = self
+            .directly_connected
+            .get(&from_addr)
+            .ok_or_else(|| {
+                format_err!(
+                    "received a route update from a non-neighboring node {}",
+                    from_addr
+                )
+            })?.clone();
+
         self.handle_entry(
             shared.clone(),
-            &from_addr,
+            neighbor.clone(),
             Entry {
                 address_family_id: 2,
                 route_tag: 0,
                 ip_address: from_addr.clone(),
-                subnet_mask: ALLOWED_NETMASK,
+                subnet_mask: u32::from(neighbor.subnet_mask),
                 metric: 0,
             },
-        ).map_err(|e| println!("Unexpected error: {}", e))
-        .ok();
+        );
 
         for entry in entries {
             entry.validate()?;
 
-            self.handle_entry(shared.clone(), &from_addr, entry)
-                .map_err(|e| println!("Warning: {}", e))
-                .ok();
+            self.handle_entry(shared.clone(), neighbor.clone(), entry);
         }
 
         Ok(())
     }
 
-    fn handle_entry(
-        &mut self,
-        shared: Arc<Mutex<RoutingTable>>,
-        addr: &Ipv4Addr,
-        entry: Entry,
-    ) -> Result<(), Error> {
-        let context = self.directly_connected.get(addr).ok_or_else(|| {
-            format_err!(
-                "received a route update from a non-neighboring node {}",
-                addr
-            )
-        })?;
-
+    fn handle_entry(&mut self, shared: Arc<Mutex<RoutingTable>>, neighbor: Neighbor, entry: Entry) {
         let network_prefix = entry.network_prefix();
-        let src_to_dst_metric = min(context.metric + entry.metric, 16);
+        let src_to_dst_metric = min(neighbor.metric + entry.metric, 16);
 
         let route_to_add = {
             match self.table.get_mut(&network_prefix) {
                 None if src_to_dst_metric < 16 => {
                     let mut route = Route {
                         destination: entry.ip_address,
-                        next_hop: *context.address.ip(),
+                        next_hop: *neighbor.address.ip(),
+                        subnet_mask: Ipv4Addr::from(entry.subnet_mask),
                         metric: src_to_dst_metric,
                         neighbor_timeout_handle: None,
                     };
@@ -196,17 +174,17 @@ impl RoutingTable {
                     Some(route)
                 }
                 Some(ref mut route) => {
-                    let is_neighbor = &route.next_hop == context.address.ip();
+                    let is_neighbor = &route.next_hop == neighbor.address.ip();
                     if is_neighbor || src_to_dst_metric < route.metric {
                         route.metric = src_to_dst_metric;
-                        route.next_hop = *context.address.ip();
+                        route.next_hop = *neighbor.address.ip();
 
                         route.restart_timeout(shared.clone(), network_prefix);
                     }
 
                     None
                 }
-                _ => return Ok(()),
+                _ => return,
             }
         };
 
@@ -214,22 +192,19 @@ impl RoutingTable {
             self.table.insert(network_prefix, route);
         }
         self.print_table();
-
-        Ok(())
     }
 
     fn print_table(&self) {
         println!(
-            "| {:20} | {:20} | {:6} |",
-            "Destination",
-            "Next Hop",
-            "Metric"
+            "| {:20} | {:20} | {:20} | {:6} |",
+            "Destination", "Subnet Mask", "Next Hop", "Metric"
         );
 
         for (_, entry) in &self.table {
             println!(
-                "| {:20} | {:20} | {:<6} |",
+                "| {:20} | {:20} | {:20} | {:<6} |",
                 entry.destination.to_string(),
+                entry.subnet_mask.to_string(),
                 entry.next_hop.to_string(),
                 entry.metric
             );
@@ -269,7 +244,7 @@ impl RoutingTable {
                     address_family_id: 2,
                     route_tag: 0,
                     ip_address: entry.destination,
-                    subnet_mask: ALLOWED_NETMASK,
+                    subnet_mask: u32::from(entry.subnet_mask),
                     metric,
                 }
             }).collect()
