@@ -219,9 +219,16 @@ impl RoutingTable {
     }
 
     fn print_table(&self) {
+        println!(
+            "| {:20} | {:20} | {:6} |",
+            "Destination",
+            "Next Hop",
+            "Metric"
+        );
+
         for (_, entry) in &self.table {
             println!(
-                "| {:20} | {:20} | {:5} |",
+                "| {:20} | {:20} | {:<6} |",
                 entry.destination.to_string(),
                 entry.next_hop.to_string(),
                 entry.metric
