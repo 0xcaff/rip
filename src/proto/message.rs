@@ -63,7 +63,6 @@ mod tests {
                     route_tag: 10,
                     ip_address: Ipv4Addr::new(129, 21, 60, 79),
                     subnet_mask: 24,
-                    next_hop: Ipv4Addr::new(123, 94, 63, 21),
                     metric: 10,
                 },
                 Entry {
@@ -71,7 +70,6 @@ mod tests {
                     route_tag: 20,
                     ip_address: Ipv4Addr::new(19, 23, 61, 89),
                     subnet_mask: 10,
-                    next_hop: Ipv4Addr::new(127, 2, 1, 6),
                     metric: 2,
                 },
             ],
